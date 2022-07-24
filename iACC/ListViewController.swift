@@ -4,8 +4,9 @@
 
 import UIKit
 
+
 class ListViewController: UITableViewController {
-	var items = [Any]()
+	var items = [itemViewModel]()
 	
 	var retryCount = 0
 	var maxRetryCount = 0
@@ -90,7 +91,8 @@ class ListViewController: UITableViewController {
 		}
 	}
 	
-	private func handleAPIResult<T>(_ result: Result<[T], Error>) {
+    
+private func handleAPIResult<T>(_ result: Result<[T], Error>) {
 		switch result {
 		case let .success(items):
 			if fromFriendsScreen && User.shared?.isPremium == true {
@@ -107,7 +109,26 @@ class ListViewController: UITableViewController {
 				}
 			}
 			
-			self.items = filteredItems
+            self.items = filteredItems.map({ item in
+                if let friend = item as? Friend {
+                    return itemViewModel(friend: friend, selection: { [weak self] in
+                        self?.selectFriend(friend: friend)
+                    })
+                }
+                else if let card = item as? Card {
+                    return itemViewModel(card: card, selection: { [weak self] in
+                        self?.selectCard(card: card)
+                    })
+                }
+                else if let transfer = item as? Transfer {
+                    return itemViewModel(transfer: transfer, longDateStyle: longDateStyle, selection: { [weak self] in
+                        self?.selectTransfer(transfer: transfer)
+                    })
+                }
+                else{
+                    fatalError()
+                }
+            })
 			self.refreshControl?.endRefreshing()
 			self.tableView.reloadData()
 			
@@ -126,21 +147,21 @@ class ListViewController: UITableViewController {
 					DispatchQueue.mainAsyncIfNeeded {
 						switch result {
 						case let .success(items):
-							self?.items = items
+                            self?.items = items.map({ item in
+                                return itemViewModel(friend: item) { [weak self] in
+                                    self?.selectFriend(friend: item)
+                                }
+                            })
 							self?.tableView.reloadData()
 							
 						case let .failure(error):
-							let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
-							alert.addAction(UIAlertAction(title: "Ok", style: .default))
-							self?.presenterVC.present(alert, animated: true)
+                            self?.showError(error)
 						}
 						self?.refreshControl?.endRefreshing()
 					}
 				}
 			} else {
-				let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
-				alert.addAction(UIAlertAction(title: "Ok", style: .default))
-				self.presenterVC.present(alert, animated: true)
+                showError(error)
 				self.refreshControl?.endRefreshing()
 			}
 		}
@@ -157,74 +178,114 @@ class ListViewController: UITableViewController {
 	override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
 		let item = items[indexPath.row]
 		let cell = tableView.dequeueReusableCell(withIdentifier: "ItemCell") ?? UITableViewCell(style: .subtitle, reuseIdentifier: "ItemCell")
-		cell.configure(item, longDateStyle: longDateStyle)
+        let viewModel = item
+		cell.configure(viewModel)
 		return cell
 	}
 	
 	override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-		let item = items[indexPath.row]
-		if let friend = item as? Friend {
-			let vc = FriendDetailsViewController()
-			vc.friend = friend
-			navigationController?.pushViewController(vc, animated: true)
-		} else if let card = item as? Card {
-			let vc = CardDetailsViewController()
-			vc.card = card
-			navigationController?.pushViewController(vc, animated: true)
-		} else if let transfer = item as? Transfer {
-			let vc = TransferDetailsViewController()
-			vc.transfer = transfer
-			navigationController?.pushViewController(vc, animated: true)
-		} else {
-			fatalError("unknown item: \(item)")
-		}
+		let vm = items[indexPath.row]
+        vm.selection()
 	}
 	
+    
+    func selectFriend(friend:Friend){
+        let vc = FriendDetailsViewController()
+        vc.friend = friend
+        show(vc, sender: self)
+    }
+    
+    func selectCard(card:Card){
+        let vc = CardDetailsViewController()
+        vc.card = card
+        show(vc, sender: self)
+    }
+    
+    func selectTransfer(transfer:Transfer){
+        let vc = TransferDetailsViewController()
+        vc.transfer = transfer
+        show(vc, sender: self)
+    }
+     func showError(_ error: (Error)) {
+        let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Ok", style: .default))
+        self.showDetailViewController(alert, sender: self)
+     }
+
 	@objc func addCard() {
-		navigationController?.pushViewController(AddCardViewController(), animated: true)
-	}
+        show(AddCardViewController(), sender: self)
+ 	}
 	
 	@objc func addFriend() {
-		navigationController?.pushViewController(AddFriendViewController(), animated: true)
-	}
+        show(AddFriendViewController(), sender: self)
+
+ 	}
 	
 	@objc func sendMoney() {
-		navigationController?.pushViewController(SendMoneyViewController(), animated: true)
-	}
+        show(SendMoneyViewController(), sender: self)
+
+ 	}
 	
 	@objc func requestMoney() {
-		navigationController?.pushViewController(RequestMoneyViewController(), animated: true)
-	}
+        show(RequestMoneyViewController(), sender: self)
+
+ 	}
+}
+
+
+struct itemViewModel{
+   
+    let text : String
+    let detailText:String
+    var selection:()->(Void)
+    
+    init(card:Card, selection: @escaping () -> (Void)) {
+       self.text = card.number
+       self.detailText = card.holder
+       self.selection = selection
+
+   }
+    
+}
+
+extension itemViewModel {
+    init(friend:Friend,selection: @escaping () -> (Void)) {
+       self.text = friend.name
+       self.detailText = friend.phone
+       self.selection = selection
+
+   }
+}
+
+extension itemViewModel {
+    init(transfer:Transfer,longDateStyle:Bool,selection: @escaping () -> (Void)) {
+        let numberFormatter = Formatters.number
+        numberFormatter.numberStyle = .currency
+        numberFormatter.currencyCode = transfer.currencyCode
+        self.selection = selection
+
+        
+        let amount = numberFormatter.string(from: transfer.amount as NSNumber)!
+        text = "\(amount) • \(transfer.description)"
+        
+        let dateFormatter = Formatters.date
+        if longDateStyle {
+            dateFormatter.dateStyle = .long
+            dateFormatter.timeStyle = .short
+            detailText = "Sent to: \(transfer.recipient) on \(dateFormatter.string(from: transfer.date))"
+        } else {
+            dateFormatter.dateStyle = .short
+            dateFormatter.timeStyle = .short
+            detailText = "Received from: \(transfer.sender) on \(dateFormatter.string(from: transfer.date))"
+        }
+    }
 }
 
 extension UITableViewCell {
-	func configure(_ item: Any, longDateStyle: Bool) {
-		if let friend = item as? Friend {
-			textLabel?.text = friend.name
-			detailTextLabel?.text = friend.phone
-		} else if let card = item as? Card {
-			textLabel?.text = card.number
-			detailTextLabel?.text = card.holder
-		} else if let transfer = item as? Transfer {
-			let numberFormatter = Formatters.number
-			numberFormatter.numberStyle = .currency
-			numberFormatter.currencyCode = transfer.currencyCode
-			
-			let amount = numberFormatter.string(from: transfer.amount as NSNumber)!
-			textLabel?.text = "\(amount) • \(transfer.description)"
-			
-			let dateFormatter = Formatters.date
-			if longDateStyle {
-				dateFormatter.dateStyle = .long
-				dateFormatter.timeStyle = .short
-				detailTextLabel?.text = "Sent to: \(transfer.recipient) on \(dateFormatter.string(from: transfer.date))"
-			} else {
-				dateFormatter.dateStyle = .short
-				dateFormatter.timeStyle = .short
-				detailTextLabel?.text = "Received from: \(transfer.sender) on \(dateFormatter.string(from: transfer.date))"
-			}
-		} else {
-			fatalError("unknown item: \(item)")
-		}
+	func configure(_ item: itemViewModel) {
+        textLabel?.text = item.text
+        detailTextLabel?.text = item.detailText
+        
 	}
 }
+
