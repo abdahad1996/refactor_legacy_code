@@ -5,57 +5,22 @@
 import UIKit
 
 
+
+protocol itemServiceStrategy {
+    func loadItems(completion: @escaping (Result<[itemViewModel], Error>) -> Void)
+}
+ 
+
 class ListViewController: UITableViewController {
 	var items = [itemViewModel]()
-	
-	var retryCount = 0
-	var maxRetryCount = 0
-	var shouldRetry = false
-	
-	var longDateStyle = false
-	
-	var fromReceivedTransfersScreen = false
-	var fromSentTransfersScreen = false
-	var fromCardsScreen = false
-	var fromFriendsScreen = false
-	
+    var service:itemServiceStrategy?
+    
 	override func viewDidLoad() {
 		super.viewDidLoad()
 		
 		refreshControl = UIRefreshControl()
 		refreshControl?.addTarget(self, action: #selector(refresh), for: .valueChanged)
 		
-		if fromFriendsScreen {
-			shouldRetry = true
-			maxRetryCount = 2
-			
-			title = "Friends"
-			
-			navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addFriend))
-			
-		} else if fromCardsScreen {
-			shouldRetry = false
-			
-			title = "Cards"
-			
-			navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(addCard))
-			
-		} else if fromSentTransfersScreen {
-			shouldRetry = true
-			maxRetryCount = 1
-			longDateStyle = true
-
-			navigationItem.title = "Sent"
-			navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Send", style: .done, target: self, action: #selector(sendMoney))
-
-		} else if fromReceivedTransfersScreen {
-			shouldRetry = true
-			maxRetryCount = 1
-			longDateStyle = false
-			
-			navigationItem.title = "Received"
-			navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Request", style: .done, target: self, action: #selector(requestMoney))
-		}
 	}
 	
 	override func viewWillAppear(_ animated: Bool) {
@@ -68,102 +33,21 @@ class ListViewController: UITableViewController {
 	
 	@objc private func refresh() {
 		refreshControl?.beginRefreshing()
-		if fromFriendsScreen {
-			FriendsAPI.shared.loadFriends { [weak self] result in
-				DispatchQueue.mainAsyncIfNeeded {
-					self?.handleAPIResult(result)
-				}
-			}
-		} else if fromCardsScreen {
-			CardAPI.shared.loadCards { [weak self] result in
-				DispatchQueue.mainAsyncIfNeeded {
-					self?.handleAPIResult(result)
-				}
-			}
-		} else if fromSentTransfersScreen || fromReceivedTransfersScreen {
-			TransfersAPI.shared.loadTransfers { [weak self] result in
-				DispatchQueue.mainAsyncIfNeeded {
-					self?.handleAPIResult(result)
-				}
-			}
-		} else {
-			fatalError("unknown context")
-		}
+        service?.loadItems(completion: handleAPIResult)
 	}
 	
     
-private func handleAPIResult<T>(_ result: Result<[T], Error>) {
+private func handleAPIResult(_ result: Result<[itemViewModel], Error>) {
 		switch result {
 		case let .success(items):
-			if fromFriendsScreen && User.shared?.isPremium == true {
-				(UIApplication.shared.connectedScenes.first?.delegate as! SceneDelegate).cache.save(items as! [Friend])
-			}
-			self.retryCount = 0
-			
-			var filteredItems = items as [Any]
-			if let transfers = items as? [Transfer] {
-				if fromSentTransfersScreen {
-					filteredItems = transfers.filter(\.isSender)
-				} else {
-					filteredItems = transfers.filter { !$0.isSender }
-				}
-			}
-			
-            self.items = filteredItems.map({ item in
-                if let friend = item as? Friend {
-                    return itemViewModel(friend: friend, selection: { [weak self] in
-                        self?.selectFriend(friend: friend)
-                    })
-                }
-                else if let card = item as? Card {
-                    return itemViewModel(card: card, selection: { [weak self] in
-                        self?.selectCard(card: card)
-                    })
-                }
-                else if let transfer = item as? Transfer {
-                    return itemViewModel(transfer: transfer, longDateStyle: longDateStyle, selection: { [weak self] in
-                        self?.selectTransfer(transfer: transfer)
-                    })
-                }
-                else{
-                    fatalError()
-                }
-            })
+            self.items = items
 			self.refreshControl?.endRefreshing()
 			self.tableView.reloadData()
 			
 		case let .failure(error):
-			if shouldRetry && retryCount < maxRetryCount {
-				retryCount += 1
-				
-				refresh()
-				return
-			}
-			
-			retryCount = 0
-			
-			if fromFriendsScreen && User.shared?.isPremium == true {
-				(UIApplication.shared.connectedScenes.first?.delegate as! SceneDelegate).cache.loadFriends { [weak self] result in
-					DispatchQueue.mainAsyncIfNeeded {
-						switch result {
-						case let .success(items):
-                            self?.items = items.map({ item in
-                                return itemViewModel(friend: item) { [weak self] in
-                                    self?.selectFriend(friend: item)
-                                }
-                            })
-							self?.tableView.reloadData()
-							
-						case let .failure(error):
-                            self?.showError(error)
-						}
-						self?.refreshControl?.endRefreshing()
-					}
-				}
-			} else {
                 showError(error)
 				self.refreshControl?.endRefreshing()
-			}
+			 
 		}
 	}
 	
@@ -189,49 +73,8 @@ private func handleAPIResult<T>(_ result: Result<[T], Error>) {
 	}
 	
     
-    func selectFriend(friend:Friend){
-        let vc = FriendDetailsViewController()
-        vc.friend = friend
-        show(vc, sender: self)
-    }
-    
-    func selectCard(card:Card){
-        let vc = CardDetailsViewController()
-        vc.card = card
-        show(vc, sender: self)
-    }
-    
-    func selectTransfer(transfer:Transfer){
-        let vc = TransferDetailsViewController()
-        vc.transfer = transfer
-        show(vc, sender: self)
-    }
-     func showError(_ error: (Error)) {
-        let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Ok", style: .default))
-        self.showDetailViewController(alert, sender: self)
-     }
-
-	@objc func addCard() {
-        show(AddCardViewController(), sender: self)
- 	}
-	
-	@objc func addFriend() {
-        show(AddFriendViewController(), sender: self)
-
- 	}
-	
-	@objc func sendMoney() {
-        show(SendMoneyViewController(), sender: self)
-
- 	}
-	
-	@objc func requestMoney() {
-        show(RequestMoneyViewController(), sender: self)
-
- 	}
+     
 }
-
 
 struct itemViewModel{
    
